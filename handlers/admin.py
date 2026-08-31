@@ -13,7 +13,6 @@ from config import ADMIN_IDS
 
 router = Router()
 
-
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
@@ -67,6 +66,31 @@ async def admin_menu(message: Message):
     builder.adjust(1)
 
     await message.answer("🛠 Admin panel", reply_markup=builder.as_markup())
+
+
+# ---------- FOYDALANUVCHILAR MUROJAATIGA JAVOB BERISH (REPLY) ----------
+
+@router.message(F.reply_to_message)
+async def admin_reply_to_user(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+        
+    reply_msg = message.reply_to_message
+    
+    if reply_msg.text and "🆔 ID:" in reply_msg.text:
+        try:
+            for line in reply_msg.text.split("\n"):
+                if "🆔 ID:" in line:
+                    user_id = int(line.split("`")[1])
+                    
+                    await message.bot.send_message(
+                        chat_id=user_id,
+                        text=f"👨‍💻 **Adindan javob:**\n\n{message.text}"
+                    )
+                    await message.reply("✅ Javob foydalanuvchiga yuborildi!")
+                    return
+        except Exception as e:
+            await message.reply(f"❌ Xatolik yuz berdi: {e}")
 
 
 # ---------- BO'LIM QO'SHISH ----------
@@ -340,7 +364,7 @@ async def add_book_finish(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-# ---------- BROADCAST (/send) - TUGMALI VA AVTO-TOZALASH BILAN ----------
+# ---------- BROADCAST (/send) ----------
 
 @router.message(Command("send"))
 async def send_start(message: Message, state: FSMContext):
