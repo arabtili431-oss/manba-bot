@@ -1,10 +1,11 @@
+import logging
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
 import database as db
 
@@ -26,18 +27,33 @@ async def check_subscription(bot: Bot, user_id: int) -> bool:
     try:
         member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
         return member.status not in ("left", "kicked")
-    except TelegramBadRequest:
-        # Bot kanalda admin emas yoki kanal noto'g'ri - bloklab qo'ymaslik uchun ruxsat beramiz
-        return True
+    except (TelegramBadRequest, TelegramForbiddenError) as e:
+        logging.error(f"Majburiy obuna tekshirishda xatolik (Kanal: {channel}): {e}")
+        # TelegramBadRequest bo'lganda True emas, False qaytariladi
+        return False
+    except Exception as e:
+        logging.error(f"Kutilmagan xatolik yuz berdi: {e}")
+        return False
 
 
 async def send_subscribe_prompt(message: Message):
     channel = await db.get_setting("force_sub_channel")
     builder = InlineKeyboardBuilder()
-    channel_link = channel if channel.startswith("@") else channel
-    builder.button(text="📢 Kanalga o'tish", url=f"https://t.me/{channel_link.lstrip('@')}")
+    
+    # Kanal havolasini to'g'ri shakllantirish
+    if not channel:
+        url = "https://t.me"
+    elif channel.startswith("http://") or channel.startswith("https://"):
+        url = channel
+    elif channel.startswith("@"):
+        url = f"https://t.me/{channel.lstrip('@')}"
+    else:
+        url = f"https://t.me/{channel}"
+
+    builder.button(text="📢 Kanalga o'tish", url=url)
     builder.button(text="✅ Tekshirish", callback_data="check_sub")
     builder.adjust(1)
+    
     await message.answer(
         "Botdan foydalanish uchun avval kanalimizga a'zo bo'ling, "
         "so'ng \"Tekshirish\" tugmasini bosing:",
@@ -51,7 +67,7 @@ async def check_sub_callback(callback: CallbackQuery):
         await callback.message.delete()
         await show_categories(callback.message, edit=False)
     else:
-        await callback.answer("Hali kanalga a'zo bo'lmadingiz.", show_alert=True)
+        await callback.answer("Hali kanalga a'zo bo'lmadingiz yoki bot kanalda admin emas.", show_alert=True)
 
 
 # ---------- MAIN MENU / CATEGORIES ----------
