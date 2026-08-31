@@ -16,20 +16,25 @@ class Search(StatesGroup):
     waiting_for_query = State()
 
 
-# ---------- MIDDLEWARE CHECK FOR BANNED USERS ----------
+# ---------- MIDDLEWARE (BAN TEKSHIRISH) ----------
 
 @router.message.outer_middleware()
 @router.callback_query.outer_middleware()
 async def check_ban_middleware(handler, event, data):
     user_id = event.from_user.id
-    if await db.is_banned(user_id):
-        if isinstance(event, Message):
-            await event.answer("🚫 Siz botdan foydalanishdan mahrum qilingansiz.")
-        return
+    try:
+        if await db.is_banned(user_id):
+            if isinstance(event, Message):
+                await event.answer("🚫 Siz botdan foydalanishdan mahrum qilingansiz.")
+            elif isinstance(event, CallbackQuery):
+                await event.answer("🚫 Siz bloklangansiz.", show_alert=True)
+            return
+    except Exception as e:
+        logging.error(f"Middleware error: {e}")
     return await handler(event, data)
 
 
-# ---------- MENU & CATEGORIES WITH PAGINATION ----------
+# ---------- BO'LIMLAR TUGMALARI ----------
 
 def categories_keyboard(categories, page: int):
     start = page * PAGE_SIZE
@@ -63,6 +68,39 @@ def categories_keyboard(categories, page: int):
     return builder.as_markup()
 
 
+# ---------- KITOBLAR TUGMALARI ----------
+
+def books_keyboard(books, category_id: int, page: int):
+    start = page * PAGE_SIZE
+    end = start + PAGE_SIZE
+    page_items = books[start:end]
+
+    builder = InlineKeyboardBuilder()
+    for book in page_items:
+        builder.button(text=book["title"], callback_data=f"book:{book['id']}")
+    builder.adjust(1)
+
+    nav_row = []
+    if page > 0:
+        nav_row.append(("⏮ Oldingi", f"cat:{category_id}:{page - 1}"))
+    if end < len(books):
+        nav_row.append(("Keyingi ⏭", f"cat:{category_id}:{page + 1}"))
+
+    if nav_row:
+        nav_builder = InlineKeyboardBuilder()
+        for text, cb in nav_row:
+            nav_builder.button(text=text, callback_data=cb)
+        nav_builder.adjust(2)
+        builder.attach(nav_builder)
+
+    back_builder = InlineKeyboardBuilder()
+    back_builder.button(text="⬅️ Bo'limlarga qaytish", callback_data="catpage:0")
+    back_builder.adjust(1)
+    builder.attach(back_builder)
+
+    return builder.as_markup()
+
+
 @router.message(CommandStart())
 async def start_handler(message: Message):
     await db.add_user(message.from_user.id)
@@ -78,7 +116,26 @@ async def category_page_handler(callback: CallbackQuery):
     await callback.answer()
 
 
-# ---------- BOOK DETAILS, RATING & FAVORITES ----------
+@router.callback_query(F.data.startswith("cat:"))
+async def category_handler(callback: CallbackQuery):
+    parts = callback.data.split(":")
+    category_id = int(parts[1])
+    page = int(parts[2]) if len(parts) > 2 else 0
+
+    books = await db.get_books_by_category(category_id)
+
+    if not books:
+        await callback.answer("Bu bo'limda hozircha kitob yo'q.", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        "Kitoblardan birini tanlang:",
+        reply_markup=books_keyboard(books, category_id, page),
+    )
+    await callback.answer()
+
+
+# ---------- KITOB MA'LUMOTLARI VA YUKLAB OLISH ----------
 
 @router.callback_query(F.data.startswith("book:"))
 async def book_handler(callback: CallbackQuery):
@@ -104,7 +161,6 @@ async def book_handler(callback: CallbackQuery):
     builder.button(text="📥 PDF yuklab olish", callback_data=f"download:{book_id}")
     builder.button(text=fav_text, callback_data=f"fav:{book_id}")
 
-    # Baholash tugmalari
     rate_row = [InlineKeyboardBuilder().button(text=f"⭐️ {i}", callback_data=f"rate:{book_id}:{i}") for i in range(1, 6)]
     for r in rate_row:
         builder.attach(r)
@@ -155,3 +211,30 @@ async def show_favorites(callback: CallbackQuery):
     builder.adjust(1)
     await callback.message.answer("⭐️ Sizning saqlangan kitoblaringiz:", reply_markup=builder.as_markup())
     await callback.answer()
+
+
+# ---------- QIDIRUV ----------
+
+@router.callback_query(F.data == "start_search")
+async def start_search_handler(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(Search.waiting_for_query)
+    await callback.message.answer("Qidirmoqchi bo'lgan kitob nomini yozing:")
+    await callback.answer()
+
+
+@router.message(Search.waiting_for_query)
+async def do_search(message: Message, state: FSMContext):
+    await state.clear()
+    query = message.text.strip()
+    results = await db.search_books(query)
+
+    if not results:
+        await message.answer(f"\"{query}\" bo'yicha hech narsa topilmadi.")
+        return
+
+    builder = InlineKeyboardBuilder()
+    for book in results:
+        builder.button(text=book["title"], callback_data=f"book:{book['id']}")
+    builder.adjust(1)
+
+    await message.answer(f"\"{query}\" bo'yicha {len(results)} ta natija topildi:", reply_markup=builder.as_markup())
