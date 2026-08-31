@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, FSInputFile
@@ -60,6 +61,9 @@ async def admin_menu(message: Message):
     builder.button(text="✏️ Bo'lim nomini o'zgartirish", callback_data="admin_edit_category")
     builder.button(text="🗑 Kitob o'chirish", callback_data="admin_del_book")
     builder.button(text="🗑 Bo'lim o'chirish", callback_data="admin_del_category")
+    builder.button(text="📢 Majburiy kanal qo'shish", callback_data="admin_add_channel")
+    builder.button(text="📋 Kanallarni boshqarish", callback_data="admin_manage_channels")
+    builder.button(text="📊 Statistika", callback_data="admin_stats_btn")
     builder.adjust(1)
 
     await message.answer("🛠 Admin panel", reply_markup=builder.as_markup())
@@ -272,7 +276,7 @@ async def del_category_pick(callback: CallbackQuery):
         builder.button(text=f"🗑 {name}", callback_data=f"confirm_del_cat:{cat_id}")
     builder.adjust(1)
     await callback.message.answer(
-        "Diqqat: bo'lim o'chirilsa, undagi barcha kitoblar ham o'chadi.\nQaysi bo'limni o'chiramiz?",
+        "Diqqat: bo'lim o'chirilsa, undagi barcha kitoblar ham o'chadi.\nQaysi bo me'yordagi bo'limni o'chiramiz?",
         reply_markup=builder.as_markup(),
     )
     await callback.answer()
@@ -366,7 +370,7 @@ async def send_broadcast_confirm(callback: CallbackQuery, state: FSMContext):
         except Exception:
             failed += 1
 
-        await asyncio.sleep(0.05)  # Telegram rate-limit'iga tegmaslik uchun
+        await asyncio.sleep(0.05)
 
     await callback.message.answer(
         f"✅ Yuborish yakunlandi.\nYuborildi: {sent}\nYuborilmadi: {failed}"
@@ -376,11 +380,7 @@ async def send_broadcast_confirm(callback: CallbackQuery, state: FSMContext):
 
 # ---------- STATS (/stats) ----------
 
-@router.message(Command("stats"))
-async def stats_handler(message: Message):
-    if not is_admin(message.from_user.id):
-        return
-
+async def send_stats(message: Message):
     user_count = await db.get_user_count()
     new_today = await db.get_new_users_today()
     book_count = await db.get_book_count()
@@ -403,39 +403,132 @@ async def stats_handler(message: Message):
     await message.answer(text)
 
 
+@router.message(Command("stats"))
+async def stats_handler(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    await send_stats(message)
+
+
+@router.callback_query(F.data == "admin_stats_btn")
+async def stats_callback(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    await send_stats(callback.message)
+    await callback.answer()
+
+
 # ---------- FORCE-SUBSCRIBE SETTINGS ----------
 
 @router.message(Command("setchannel"))
-async def set_channel_start(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
+@router.callback_query(F.data == "admin_add_channel")
+async def set_channel_start(event: Message | CallbackQuery, state: FSMContext):
+    user_id = event.from_user.id
+    if not is_admin(user_id):
         return
+
     await state.set_state(SetChannel.waiting_for_channel)
-    await message.answer(
-        "Majburiy obuna kanalining username'ini yuboring (masalan: @mening_kanalim).\n\n"
-        "Diqqat: bot shu kanalda admin bo'lishi shart, aks holda a'zolikni tekshira olmaydi.\n\n"
-        "O'chirish uchun /removechannel yuboring."
+    msg_text = (
+        "Majburiy obuna kanali username'ini yoki silakasini yuboring (masalan: @mening_kanalim).\n\n"
+        "Bir nechta kanal qo'shishingiz mumkin, ular ketma-ket saqlab boriladi.\n\n"
+        "Diqqat: bot shu kanallarda admin bo'lishi shart!\n\n"
+        "Mavjud kanallarni ko'rish yoki o'chirish uchun /removechannel buyrug'idan foydalaning."
     )
-
-
-@router.message(Command("removechannel"))
-async def remove_channel(message: Message):
-    if not is_admin(message.from_user.id):
-        return
-    await db.delete_setting("force_sub_channel")
-    await message.answer("✅ Majburiy obuna o'chirildi.")
+    if isinstance(event, CallbackQuery):
+        await event.message.answer(msg_text)
+        await event.answer()
+    else:
+        await event.answer(msg_text)
 
 
 @router.message(SetChannel.waiting_for_channel)
 async def set_channel_save(message: Message, state: FSMContext):
     channel = message.text.strip()
-    if not channel.startswith("@"):
+    if not channel.startswith("@") and not channel.startswith("-100") and not channel.startswith("http://") and not channel.startswith("https://"):
         channel = "@" + channel
-    await db.set_setting("force_sub_channel", channel)
+
+    existing = await db.get_setting("force_sub_channel")
+    channels = [c.strip() for c in existing.split(",") if c.strip()] if existing else []
+
+    if channel in channels:
+        await message.answer(f"⚠️ Bu kanal ({channel}) allaqachon majburiy obuna ro'yxatida bor.")
+        await state.clear()
+        return
+
+    channels.append(channel)
+    new_setting = ",".join(channels)
+    await db.set_setting("force_sub_channel", new_setting)
     await state.clear()
-    await message.answer(
-        f"✅ Majburiy obuna kanali o'rnatildi: {channel}\n\n"
-        "Botni shu kanalga admin qilib qo'yishni unutmang."
-    )
+
+    text = "✅ Yangi majburiy obuna kanali qo'shildi!\n\n📋 **Hozirgi kanallar ro'yxati:**\n"
+    for idx, ch in enumerate(channels, 1):
+        text += f"{idx}. {ch}\n"
+    text += "\nBotni ushbu kanallarda admin qilishni unutmang."
+
+    await message.answer(text)
+
+
+@router.message(Command("removechannel"))
+@router.callback_query(F.data == "admin_manage_channels")
+async def remove_channel_menu(event: Message | CallbackQuery):
+    user_id = event.from_user.id
+    if not is_admin(user_id):
+        return
+
+    existing = await db.get_setting("force_sub_channel")
+    channels = [c.strip() for c in existing.split(",") if c.strip()] if existing else []
+
+    if not channels:
+        msg = "Hozircha hech qanday majburiy obuna kanallari o'rnatilmagan."
+        if isinstance(event, CallbackQuery):
+            await event.message.answer(msg)
+            await event.answer()
+        else:
+            await event.answer(msg)
+        return
+
+    builder = InlineKeyboardBuilder()
+    for idx, ch in enumerate(channels):
+        builder.button(text=f"🗑 {ch}", callback_data=f"delchan:{idx}")
+    builder.button(text="🔥 Barchasini o'chirish", callback_data="delchan_all")
+    builder.adjust(1)
+
+    msg = "📋 **Majburiy obuna kanallari:**\nO'chirmoqchi bo'lgan kanalingizni bosing:"
+    if isinstance(event, CallbackQuery):
+        await event.message.answer(msg, reply_markup=builder.as_markup())
+        await event.answer()
+    else:
+        await event.answer(msg, reply_markup=builder.as_markup())
+
+
+@router.callback_query(F.data.startswith("delchan:"))
+async def del_single_channel(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+
+    idx = int(callback.data.split(":")[1])
+    existing = await db.get_setting("force_sub_channel")
+    channels = [c.strip() for c in existing.split(",") if c.strip()] if existing else []
+
+    if 0 <= idx < len(channels):
+        removed = channels.pop(idx)
+        if channels:
+            await db.set_setting("force_sub_channel", ",".join(channels))
+        else:
+            await db.delete_setting("force_sub_channel")
+        await callback.message.answer(f"✅ Kanal o'chirildi: {removed}")
+    else:
+        await callback.answer("Kanal topilmadi.", show_alert=True)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "delchan_all")
+async def del_all_channels(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    await db.delete_setting("force_sub_channel")
+    await callback.message.answer("✅ Barcha majburiy obuna kanallari o'chirildi.")
+    await callback.answer()
 
 
 # ---------- BACKUP (/backup) ----------
