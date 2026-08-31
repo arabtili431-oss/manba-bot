@@ -23,22 +23,40 @@ async def init_db():
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS books (
                 id SERIAL PRIMARY KEY,
-                category_id INTEGER NOT NULL REFERENCES categories(id),
+                category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
                 title TEXT NOT NULL,
                 file_id TEXT NOT NULL,
+                photo_id TEXT DEFAULT NULL,
+                description TEXT DEFAULT NULL,
                 download_count INTEGER NOT NULL DEFAULT 0
             )
         """)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
-                joined_at TIMESTAMP NOT NULL DEFAULT now()
+                joined_at TIMESTAMP NOT NULL DEFAULT now(),
+                is_banned BOOLEAN DEFAULT FALSE
             )
         """)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS favorites (
+                user_id BIGINT NOT NULL,
+                book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+                PRIMARY KEY (user_id, book_id)
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS ratings (
+                user_id BIGINT NOT NULL,
+                book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+                rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
+                PRIMARY KEY (user_id, book_id)
             )
         """)
 
@@ -61,35 +79,30 @@ async def get_categories():
 async def get_category(category_id: int):
     pool = await get_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT id, name FROM categories WHERE id = $1", category_id
-        )
+        row = await conn.fetchrow("SELECT id, name FROM categories WHERE id = $1", category_id)
         return (row["id"], row["name"]) if row else None
 
 
 async def update_category_name(category_id: int, name: str):
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE categories SET name = $1 WHERE id = $2", name, category_id
-        )
+        await conn.execute("UPDATE categories SET name = $1 WHERE id = $2", name, category_id)
 
 
 async def delete_category(category_id: int):
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM books WHERE category_id = $1", category_id)
         await conn.execute("DELETE FROM categories WHERE id = $1", category_id)
 
 
 # ---------- BOOKS ----------
 
-async def add_book(category_id: int, title: str, file_id: str):
+async def add_book(category_id: int, title: str, file_id: str, photo_id: str = None, description: str = None):
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO books (category_id, title, file_id) VALUES ($1, $2, $3)",
-            category_id, title, file_id,
+            "INSERT INTO books (category_id, title, file_id, photo_id, description) VALUES ($1, $2, $3, $4, $5)",
+            category_id, title, file_id, photo_id, description,
         )
 
 
@@ -97,23 +110,21 @@ async def get_books_by_category(category_id: int):
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT id, title, file_id, download_count FROM books "
+            "SELECT id, title, file_id, photo_id, description, download_count FROM books "
             "WHERE category_id = $1 ORDER BY title",
             category_id,
         )
-        return [(r["id"], r["title"], r["file_id"], r["download_count"]) for r in rows]
+        return [dict(r) for r in rows]
 
 
 async def get_book(book_id: int):
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT id, title, file_id, download_count FROM books WHERE id = $1",
+            "SELECT id, title, file_id, photo_id, description, download_count FROM books WHERE id = $1",
             book_id,
         )
-        if not row:
-            return None
-        return (row["id"], row["title"], row["file_id"], row["download_count"])
+        return dict(row) if row else None
 
 
 async def update_book_title(book_id: int, title: str):
@@ -131,48 +142,74 @@ async def delete_book(book_id: int):
 async def increment_download_count(book_id: int):
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE books SET download_count = download_count + 1 WHERE id = $1",
-            book_id,
-        )
+        await conn.execute("UPDATE books SET download_count = download_count + 1 WHERE id = $1", book_id)
 
 
 async def search_books(query: str, limit: int = 30):
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT id, title, file_id, download_count FROM books "
+            "SELECT id, title, file_id, photo_id, description, download_count FROM books "
             "WHERE title ILIKE $1 ORDER BY title LIMIT $2",
             f"%{query}%", limit,
         )
-        return [(r["id"], r["title"], r["file_id"], r["download_count"]) for r in rows]
+        return [dict(r) for r in rows]
 
 
-async def get_top_books(limit: int = 10):
+# ---------- FAVORITES & RATINGS ----------
+
+async def toggle_favorite(user_id: int, book_id: int) -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        exists = await conn.fetchval(
+            "SELECT 1 FROM favorites WHERE user_id = $1 AND book_id = $2", user_id, book_id
+        )
+        if exists:
+            await conn.execute("DELETE FROM favorites WHERE user_id = $1 AND book_id = $2", user_id, book_id)
+            return False
+        else:
+            await conn.execute("INSERT INTO favorites (user_id, book_id) VALUES ($1, $2)", user_id, book_id)
+            return True
+
+
+async def is_favorite(user_id: int, book_id: int) -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return bool(await conn.fetchval(
+            "SELECT 1 FROM favorites WHERE user_id = $1 AND book_id = $2", user_id, book_id
+        ))
+
+
+async def get_user_favorites(user_id: int):
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT title, download_count FROM books "
-            "WHERE download_count > 0 ORDER BY download_count DESC LIMIT $1",
-            limit,
+            "SELECT b.id, b.title FROM favorites f JOIN books b ON f.book_id = b.id WHERE f.user_id = $1",
+            user_id
         )
-        return [(r["title"], r["download_count"]) for r in rows]
+        return [(r["id"], r["title"]) for r in rows]
 
 
-async def get_book_count():
+async def set_rating(user_id: int, book_id: int, rating: int):
     pool = await get_pool()
     async with pool.acquire() as conn:
-        return await conn.fetchval("SELECT COUNT(*) FROM books")
+        await conn.execute("""
+            INSERT INTO ratings (user_id, book_id, rating) VALUES ($1, $2, $3)
+            ON CONFLICT (user_id, book_id) DO UPDATE SET rating = EXCLUDED.rating
+        """, user_id, book_id, rating)
 
 
-async def get_total_downloads():
+async def get_book_rating(book_id: int):
     pool = await get_pool()
     async with pool.acquire() as conn:
-        result = await conn.fetchval("SELECT COALESCE(SUM(download_count), 0) FROM books")
-        return result
+        val = await conn.fetchrow(
+            "SELECT AVG(rating)::numeric(10,1) as avg_rating, COUNT(*) as count FROM ratings WHERE book_id = $1",
+            book_id
+        )
+        return (val["avg_rating"] or 0.0, val["count"] or 0)
 
 
-# ---------- USERS ----------
+# ---------- USERS & BAN SYSTEM ----------
 
 async def add_user(user_id: int):
     pool = await get_pool()
@@ -183,10 +220,29 @@ async def add_user(user_id: int):
         )
 
 
+async def delete_user(user_id: int):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM users WHERE user_id = $1", user_id)
+
+
+async def set_user_ban(user_id: int, is_banned: bool):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE users SET is_banned = $1 WHERE user_id = $2", is_banned, user_id)
+
+
+async def is_banned(user_id: int) -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        val = await conn.fetchval("SELECT is_banned FROM users WHERE user_id = $1", user_id)
+        return bool(val)
+
+
 async def get_all_users():
     pool = await get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT user_id FROM users")
+        rows = await conn.fetch("SELECT user_id FROM users WHERE is_banned = FALSE")
         return [row["user_id"] for row in rows]
 
 
@@ -199,19 +255,28 @@ async def get_user_count():
 async def get_new_users_today():
     pool = await get_pool()
     async with pool.acquire() as conn:
-        return await conn.fetchval(
-            "SELECT COUNT(*) FROM users WHERE joined_at::date = CURRENT_DATE"
-        )
+        return await conn.fetchval("SELECT COUNT(*) FROM users WHERE joined_at::date = CURRENT_DATE")
 
 
-# ---------- SETTINGS (force-subscribe kanal va boshqalar uchun) ----------
+async def get_book_count():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchval("SELECT COUNT(*) FROM books")
+
+
+async def get_total_downloads():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchval("SELECT COALESCE(SUM(download_count), 0) FROM books")
+
+
+# ---------- SETTINGS ----------
 
 async def set_setting(key: str, value: str):
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO settings (key, value) VALUES ($1, $2) "
-            "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            "INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
             key, value,
         )
 
@@ -226,23 +291,3 @@ async def delete_setting(key: str):
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("DELETE FROM settings WHERE key = $1", key)
-
-
-# ---------- BACKUP / EXPORT ----------
-
-async def export_all_data():
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        categories = await conn.fetch("SELECT id, name FROM categories ORDER BY id")
-        books = await conn.fetch(
-            "SELECT id, category_id, title, file_id, download_count FROM books ORDER BY id"
-        )
-        users = await conn.fetch("SELECT user_id FROM users")
-        settings = await conn.fetch("SELECT key, value FROM settings")
-
-    return {
-        "categories": [dict(r) for r in categories],
-        "books": [dict(r) for r in books],
-        "users": [r["user_id"] for r in users],
-        "settings": {r["key"]: r["value"] for r in settings},
-    }
