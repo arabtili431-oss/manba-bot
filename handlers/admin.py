@@ -82,6 +82,8 @@ async def add_category_start(callback: CallbackQuery, state: FSMContext):
 
 @router.message(AddCategory.waiting_for_name)
 async def add_category_finish(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
     await db.add_category(message.text.strip())
     await state.clear()
     await message.answer(f"✅ Bo'lim qo'shildi: {message.text.strip()}")
@@ -100,6 +102,8 @@ async def add_channel_start(callback: CallbackQuery, state: FSMContext):
 
 @router.message(SetChannel.waiting_for_channel)
 async def add_channel_finish(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
     await db.set_setting("force_sub_channel", message.text.strip())
     await state.clear()
     await message.answer(f"✅ Majburiy obuna kanali saqlandi: {message.text.strip()}")
@@ -125,6 +129,8 @@ async def del_category_pick(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("confirm_del_cat:"))
 async def del_category_confirm(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
     category_id = int(callback.data.split(":")[1])
     await db.delete_category(category_id)
     await callback.message.answer("✅ Bo'lim va undagi barcha kitoblar o'chirildi.")
@@ -151,6 +157,8 @@ async def del_book_pick_category(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("delcat_books:"))
 async def del_book_pick_book(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
     category_id = int(callback.data.split(":")[1])
     books = await db.get_books_by_category(category_id)
 
@@ -169,6 +177,8 @@ async def del_book_pick_book(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("confirm_del_book:"))
 async def del_book_confirm(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
     book_id = int(callback.data.split(":")[1])
     await db.delete_book(book_id)
     await callback.message.answer("✅ Kitob o'chirildi.")
@@ -201,6 +211,8 @@ async def stats_btn_handler(callback: CallbackQuery):
 
 @router.callback_query(F.data == "admin_ban_user")
 async def ban_user_start(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return
     await state.set_state(BanUser.waiting_for_id)
     await callback.message.answer("Ban qilinadigan foydalanuvchi Telegram ID sini yuboring:")
     await callback.answer()
@@ -208,6 +220,8 @@ async def ban_user_start(callback: CallbackQuery, state: FSMContext):
 
 @router.message(BanUser.waiting_for_id)
 async def ban_user_finish(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
     try:
         user_id = int(message.text.strip())
         await db.set_user_ban(user_id, True)
@@ -219,6 +233,8 @@ async def ban_user_finish(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "admin_unban_user")
 async def unban_user_start(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return
     await state.set_state(UnbanUser.waiting_for_id)
     await callback.message.answer("Bani olib tashlanadigan foydalanuvchi Telegram ID sini yuboring:")
     await callback.answer()
@@ -226,6 +242,8 @@ async def unban_user_start(callback: CallbackQuery, state: FSMContext):
 
 @router.message(UnbanUser.waiting_for_id)
 async def unban_user_finish(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
     try:
         user_id = int(message.text.strip())
         await db.set_user_ban(user_id, False)
@@ -248,6 +266,8 @@ async def add_book_start(callback: CallbackQuery, state: FSMContext):
 
 @router.message(AddBook.waiting_for_pdf, F.document)
 async def add_book_got_pdf(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
     await state.update_data(file_id=message.document.file_id)
     await state.set_state(AddBook.waiting_for_photo)
     await message.answer("Kitob muqovasi (rasm) yuboring yoki o'tkazib yuborish uchun /skip bosing:")
@@ -255,4 +275,227 @@ async def add_book_got_pdf(message: Message, state: FSMContext):
 
 @router.message(Command("skip"), AddBook.waiting_for_photo)
 async def skip_photo(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
     await state.update_data(photo_id=None)
+    await state.set_state(AddBook.waiting_for_desc)
+    await message.answer("Kitob tavsifini yozing yoki /skip bosing:")
+
+
+@router.message(AddBook.waiting_for_photo, F.photo)
+async def add_book_got_photo(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await state.update_data(photo_id=message.photo[-1].file_id)
+    await state.set_state(AddBook.waiting_for_desc)
+    await message.answer("Kitob tavsifini yozing yoki /skip bosing:")
+
+
+@router.message(Command("skip"), AddBook.waiting_for_desc)
+async def skip_desc(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await state.update_data(description=None)
+    await state.set_state(AddBook.waiting_for_title)
+    await message.answer("Kitob nomini yuboring:")
+
+
+@router.message(AddBook.waiting_for_desc)
+async def add_book_got_desc(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await state.update_data(description=message.text.strip())
+    await state.set_state(AddBook.waiting_for_title)
+    await message.answer("Kitob nomini yuboring:")
+
+
+@router.message(AddBook.waiting_for_title)
+async def add_book_got_title(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await state.update_data(title=message.text.strip())
+    categories = await db.get_categories()
+    if not categories:
+        await message.answer("Avval bo'lim qo'shing.")
+        await state.clear()
+        return
+
+    builder = InlineKeyboardBuilder()
+    for cat_id, name in categories:
+        builder.button(text=name, callback_data=f"pick_cat:{cat_id}")
+    builder.adjust(1)
+    await state.set_state(AddBook.waiting_for_category)
+    await message.answer("Qaysi bo'limga qo'shamiz?", reply_markup=builder.as_markup())
+
+
+@router.callback_query(AddBook.waiting_for_category, F.data.startswith("pick_cat:"))
+async def add_book_finish(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return
+    category_id = int(callback.data.split(":")[1])
+    data = await state.get_data()
+    await db.add_book(category_id, data["title"], data["file_id"], data.get("photo_id"), data.get("description"))
+    await state.clear()
+    await callback.message.answer(f"✅ Kitob qo'shildi: {data['title']}")
+    await callback.answer()
+
+
+# ---------- BROADCAST (/send) - TUGMALI VA AVTO-TOZALASH BILAN ----------
+
+@router.message(Command("send"))
+async def send_start(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await state.set_state(Broadcast.waiting_for_message)
+    await message.answer(
+        "Yubormoqchi bo'lgan xabarni menga yuboring "
+        "(matn, rasm, video yoki fayl bo'lishi mumkin).\n\n"
+        "Bekor qilish uchun /cancel yuboring."
+    )
+
+
+@router.message(Command("cancel"), Broadcast.waiting_for_message)
+@router.message(Command("cancel"), Broadcast.waiting_for_buttons)
+async def send_cancel(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await state.clear()
+    await message.answer("Xabar yuborish bekor qilindi.")
+
+
+@router.message(Broadcast.waiting_for_message)
+async def send_got_message(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await state.update_data(chat_id=message.chat.id, message_id=message.message_id)
+    
+    await state.set_state(Broadcast.waiting_for_buttons)
+    await message.answer(
+        "Endi xabar ostiga qo'shiladigan tugmalarni yuboring.\n\n"
+        "📝 **Format:**\n"
+        "`Tugma nomi - https://havola.com`\n\n"
+        "Yoki yonma-yon qo'shish uchun `|` bilan ajrating:\n"
+        "`1-tugma - https://link1.com | 2-tugma - https://link2.com`\n\n"
+        "Agar tugma kerak bo'lmasa, shunchaki **/skip** buyrug'ini yuboring.",
+        parse_mode="Markdown"
+    )
+
+
+def create_inline_keyboard_from_text(text: str):
+    if not text or text.strip() == "/skip":
+        return None
+        
+    builder = InlineKeyboardBuilder()
+    lines = text.strip().split("\n")
+    
+    for line in lines:
+        buttons = line.split("|")
+        row = []
+        for btn in buttons:
+            if "-" in btn:
+                btn_text, btn_url = btn.split("-", 1)
+                row.append(InlineKeyboardButton(text=btn_text.strip(), url=btn_url.strip()))
+        if row:
+            builder.row(*row)
+            
+    return builder.as_markup()
+
+
+@router.message(Broadcast.waiting_for_buttons)
+async def send_got_buttons(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await state.update_data(buttons_text=message.text.strip())
+    data = await state.get_data()
+    
+    markup = create_inline_keyboard_from_text(data.get("buttons_text"))
+    
+    await message.answer("👀 Xabar foydalanuvchilarga mana shunday ko'rinishda yuboriladi:")
+    try:
+        await message.bot.copy_message(
+            chat_id=message.chat.id,
+            from_chat_id=data["chat_id"],
+            message_id=data["message_id"],
+            reply_markup=markup
+        )
+    except Exception as e:
+        await message.answer("⚠️ Xabarni namoyish qilishda xatolik. URL havolalar xato bo'lishi mumkin. Qaytadan tekshiring.")
+        return
+
+    user_count = await db.get_user_count()
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Yuborish", callback_data="broadcast_confirm")
+    builder.button(text="❌ Bekor qilish", callback_data="broadcast_cancel")
+    builder.adjust(2)
+
+    await state.set_state(Broadcast.waiting_for_confirm)
+    await message.answer(
+        f"Yuqoridagi xabar {user_count} ta foydalanuvchiga yuboriladi. Tasdiqlaysizmi?",
+        reply_markup=builder.as_markup(),
+    )
+
+
+@router.callback_query(Broadcast.waiting_for_confirm, F.data == "broadcast_cancel")
+async def send_broadcast_cancel(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return
+    await state.clear()
+    await callback.message.edit_text("Bekor qilindi.")
+    await callback.answer()
+
+
+@router.callback_query(Broadcast.waiting_for_confirm, F.data == "broadcast_confirm")
+async def send_broadcast_confirm(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return
+    data = await state.get_data()
+    await state.clear()
+
+    markup = create_inline_keyboard_from_text(data.get("buttons_text"))
+    users = await db.get_all_users()
+    await callback.message.edit_text(f"⏳ Yuborilmoqda... (0/{len(users)})")
+
+    sent = 0
+    failed = 0
+    blocked_count = 0
+
+    for user_id in users:
+        try:
+            await callback.bot.copy_message(
+                chat_id=user_id,
+                from_chat_id=data["chat_id"],
+                message_id=data["message_id"],
+                reply_markup=markup
+            )
+            sent += 1
+        except TelegramRetryAfter as e:
+            await asyncio.sleep(e.retry_after)
+            try:
+                await callback.bot.copy_message(
+                    chat_id=user_id,
+                    from_chat_id=data["chat_id"],
+                    message_id=data["message_id"],
+                    reply_markup=markup
+                )
+                sent += 1
+            except Exception:
+                failed += 1
+        except (TelegramForbiddenError, TelegramNotFound):
+            failed += 1
+            blocked_count += 1
+            await db.delete_user(user_id)
+        except Exception as e:
+            logging.error(f"Xabar yuborishda xatolik: {e}")
+            failed += 1
+
+        await asyncio.sleep(0.05)
+
+    report_text = (
+        f"✅ Yuborish yakunlandi.\n\n"
+        f"📤 Yuborildi: {sent}\n"
+        f"❌ Yuborilmadi: {failed}\n"
+        f"🗑 Bazadan o'chirilgan faol bo'lmaganlar: {blocked_count}"
+    )
+    await callback.message.answer(report_text)
+    await callback.answer()
