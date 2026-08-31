@@ -5,89 +5,31 @@ from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
 import database as db
 
 router = Router()
-
-PAGE_SIZE = 10
+PAGE_SIZE = 5
 
 
 class Search(StatesGroup):
     waiting_for_query = State()
 
 
-# ---------- FORCE-SUBSCRIBE ----------
+# ---------- MIDDLEWARE CHECK FOR BANNED USERS ----------
 
-async def get_unsubscribed_channels(bot: Bot, user_id: int) -> list:
-    """Foydalanuvchi obuna bo'lmagan kanallar ro'yxatini qaytaradi."""
-    channels_data = await db.get_setting("force_sub_channel")
-    if not channels_data:
-        return []
-
-    # Kanallarni ajratish (vergul bilan ko'rsatilgan bo'lsa ro'yxatga o'tkaziladi)
-    if isinstance(channels_data, str):
-        channels = [ch.strip() for ch in channels_data.split(",") if ch.strip()]
-    elif isinstance(channels_data, list):
-        channels = channels_data
-    else:
-        channels = [str(channels_data)]
-
-    unsubscribed = []
-    for channel in channels:
-        try:
-            member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
-            if member.status in ("left", "kicked"):
-                unsubscribed.append(channel)
-        except (TelegramBadRequest, TelegramForbiddenError) as e:
-            logging.error(f"Kanalni tekshirishda xatolik ({channel}): {e}")
-        except Exception as e:
-            logging.error(f"Kutilmagan xatolik ({channel}): {e}")
-
-    return unsubscribed
+@router.message.outer_middleware()
+@router.callback_query.outer_middleware()
+async def check_ban_middleware(handler, event, data):
+    user_id = event.from_user.id
+    if await db.is_banned(user_id):
+        if isinstance(event, Message):
+            await event.answer("🚫 Siz botdan foydalanishdan mahrum qilingansiz.")
+        return
+    return await handler(event, data)
 
 
-async def check_subscription(bot: Bot, user_id: int) -> bool:
-    unsubscribed = await get_unsubscribed_channels(bot, user_id)
-    return len(unsubscribed) == 0
-
-
-async def send_subscribe_prompt(message: Message):
-    unsubscribed = await get_unsubscribed_channels(message.bot, message.from_user.id)
-    builder = InlineKeyboardBuilder()
-
-    for idx, channel in enumerate(unsubscribed, 1):
-        if channel.startswith("http://") or channel.startswith("https://"):
-            url = channel
-        elif channel.startswith("@"):
-            url = f"https://t.me/{channel.lstrip('@')}"
-        else:
-            url = f"https://t.me/{channel}"
-
-        btn_text = f"📢 {idx}-Kanalga o'tish" if len(unsubscribed) > 1 else "📢 Kanalga o'tish"
-        builder.button(text=btn_text, url=url)
-
-    builder.button(text="✅ Tekshirish", callback_data="check_sub")
-    builder.adjust(1)
-
-    await message.answer(
-        "Botdan foydalanish uchun quyidagi kanallarga a'zo bo'ling, "
-        "so'ng \"Tekshirish\" tugmasini bosing:",
-        reply_markup=builder.as_markup(),
-    )
-
-
-@router.callback_query(F.data == "check_sub")
-async def check_sub_callback(callback: CallbackQuery):
-    if await check_subscription(callback.bot, callback.from_user.id):
-        await callback.message.delete()
-        await show_categories(callback.message, edit=False)
-    else:
-        await callback.answer("Hali barcha kanallarga a'zo bo'lmadingiz.", show_alert=True)
-
-
-# ---------- MAIN MENU / CATEGORIES ----------
+# ---------- MENU & CATEGORIES WITH PAGINATION ----------
 
 def categories_keyboard(categories, page: int):
     start = page * PAGE_SIZE
@@ -96,14 +38,15 @@ def categories_keyboard(categories, page: int):
 
     builder = InlineKeyboardBuilder()
     for cat_id, name in page_items:
-        builder.button(text=name, callback_data=f"cat:{cat_id}:{page}")
+        builder.button(text=name, callback_data=f"cat:{cat_id}:0")
     builder.adjust(1)
 
     nav_row = []
     if page > 0:
-        nav_row.append(("⬅️", f"catpage:{page - 1}"))
+        nav_row.append(("⏮ Oldingi", f"catpage:{page - 1}"))
     if end < len(categories):
-        nav_row.append(("➡️", f"catpage:{page + 1}"))
+        nav_row.append(("Keyingi ⏭", f"catpage:{page + 1}"))
+
     if nav_row:
         nav_builder = InlineKeyboardBuilder()
         for text, cb in nav_row:
@@ -111,105 +54,31 @@ def categories_keyboard(categories, page: int):
         nav_builder.adjust(2)
         builder.attach(nav_builder)
 
-    search_builder = InlineKeyboardBuilder()
-    search_builder.button(text="🔍 Qidirish", callback_data="start_search")
-    search_builder.adjust(1)
-    builder.attach(search_builder)
+    action_builder = InlineKeyboardBuilder()
+    action_builder.button(text="🔍 Qidirish", callback_data="start_search")
+    action_builder.button(text="⭐️ Saqlanganlar", callback_data="show_favorites")
+    action_builder.adjust(2)
+    builder.attach(action_builder)
 
     return builder.as_markup()
-
-
-async def show_categories(message: Message, page: int = 0, edit: bool = True):
-    categories = await db.get_categories()
-
-    if not categories:
-        text = "Assalomu alaykum! 📚\n\nHozircha bo'limlar qo'shilmagan. Tez orada qo'llanmalar paydo bo'ladi."
-        if edit:
-            await message.edit_text(text)
-        else:
-            await message.answer(text)
-        return
-
-    text = "Assalomu alaykum! 📚\n\nQuyidagi bo'limlardan birini tanlang:"
-    markup = categories_keyboard(categories, page)
-
-    if edit:
-        try:
-            await message.edit_text(text, reply_markup=markup)
-        except TelegramBadRequest:
-            await message.answer(text, reply_markup=markup)
-    else:
-        await message.answer(text, reply_markup=markup)
 
 
 @router.message(CommandStart())
 async def start_handler(message: Message):
     await db.add_user(message.from_user.id)
-
-    if not await check_subscription(message.bot, message.from_user.id):
-        await send_subscribe_prompt(message)
-        return
-
-    await show_categories(message, edit=False)
+    categories = await db.get_categories()
+    await message.answer("Assalomu alaykum! 📚\nBo'limlardan birini tanlang:", reply_markup=categories_keyboard(categories, 0))
 
 
 @router.callback_query(F.data.startswith("catpage:"))
 async def category_page_handler(callback: CallbackQuery):
     page = int(callback.data.split(":")[1])
-    await show_categories(callback.message, page=page, edit=True)
+    categories = await db.get_categories()
+    await callback.message.edit_text("Bo'limlardan birini tanlang:", reply_markup=categories_keyboard(categories, page))
     await callback.answer()
 
 
-# ---------- BOOKS IN CATEGORY ----------
-
-def books_keyboard(books, category_id: int, page: int):
-    start = page * PAGE_SIZE
-    end = start + PAGE_SIZE
-    page_items = books[start:end]
-
-    builder = InlineKeyboardBuilder()
-    for book_id, title, _, _ in page_items:
-        builder.button(text=title, callback_data=f"book:{book_id}")
-    builder.adjust(1)
-
-    nav_row = []
-    if page > 0:
-        nav_row.append(("⬅️", f"cat:{category_id}:{page - 1}"))
-    if end < len(books):
-        nav_row.append(("➡️", f"cat:{category_id}:{page + 1}"))
-    if nav_row:
-        nav_builder = InlineKeyboardBuilder()
-        for text, cb in nav_row:
-            nav_builder.button(text=text, callback_data=cb)
-        nav_builder.adjust(2)
-        builder.attach(nav_builder)
-
-    back_builder = InlineKeyboardBuilder()
-    back_builder.button(text="⬅️ Bo'limlarga qaytish", callback_data="catpage:0")
-    back_builder.adjust(1)
-    builder.attach(back_builder)
-
-    return builder.as_markup()
-
-
-@router.callback_query(F.data.startswith("cat:"))
-async def category_handler(callback: CallbackQuery):
-    parts = callback.data.split(":")
-    category_id = int(parts[1])
-    page = int(parts[2]) if len(parts) > 2 else 0
-
-    books = await db.get_books_by_category(category_id)
-
-    if not books:
-        await callback.answer("Bu bo'limda hozircha kitob yo'q.", show_alert=True)
-        return
-
-    await callback.message.edit_text(
-        "Kitoblardan birini tanlang:",
-        reply_markup=books_keyboard(books, category_id, page),
-    )
-    await callback.answer()
-
+# ---------- BOOK DETAILS, RATING & FAVORITES ----------
 
 @router.callback_query(F.data.startswith("book:"))
 async def book_handler(callback: CallbackQuery):
@@ -220,45 +89,69 @@ async def book_handler(callback: CallbackQuery):
         await callback.answer("Kitob topilmadi.", show_alert=True)
         return
 
-    _, title, file_id, _ = book
-    await callback.message.answer_document(file_id, caption=f"📄 {title}")
+    avg_rating, count = await db.get_book_rating(book_id)
+    is_fav = await db.is_favorite(callback.from_user.id, book_id)
+    fav_text = "❌ Saqlanganlardan o'chirish" if is_fav else "⭐️ Saqlanganlarga qo'shish"
+
+    caption = (
+        f"📖 **{book['title']}**\n\n"
+        f"📝 **Tavsif:** {book['description'] or 'Mavjud emas'}\n"
+        f"⭐️ **Baho:** {avg_rating}/5 ({count} ta ovoz)\n"
+        f"📥 **Yuklab olishlar:** {book['download_count']}"
+    )
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📥 PDF yuklab olish", callback_data=f"download:{book_id}")
+    builder.button(text=fav_text, callback_data=f"fav:{book_id}")
+
+    # Baholash tugmalari
+    rate_row = [InlineKeyboardBuilder().button(text=f"⭐️ {i}", callback_data=f"rate:{book_id}:{i}") for i in range(1, 6)]
+    for r in rate_row:
+        builder.attach(r)
+
+    builder.adjust(1, 1, 5)
+
+    if book["photo_id"]:
+        await callback.message.answer_photo(photo=book["photo_id"], caption=caption, reply_markup=builder.as_markup(), parse_mode="Markdown")
+    else:
+        await callback.message.answer(text=caption, reply_markup=builder.as_markup(), parse_mode="Markdown")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("download:"))
+async def download_book(callback: CallbackQuery):
+    book_id = int(callback.data.split(":")[1])
+    book = await db.get_book(book_id)
+    await callback.message.answer_document(book["file_id"], caption=f"📄 {book['title']}")
     await db.increment_download_count(book_id)
     await callback.answer()
 
 
-# ---------- SEARCH ----------
-
-@router.callback_query(F.data == "start_search")
-async def start_search_handler(callback: CallbackQuery, state: FSMContext):
-    await state.set_state(Search.waiting_for_query)
-    await callback.message.answer(
-        "Qidirmoqchi bo'lgan kitob nomini yozing (bekor qilish uchun /cancel):"
-    )
-    await callback.answer()
+@router.callback_query(F.data.startswith("fav:"))
+async def favorite_toggle(callback: CallbackQuery):
+    book_id = int(callback.data.split(":")[1])
+    status = await db.toggle_favorite(callback.from_user.id, book_id)
+    msg = "Saqlanganlarga qo'shildi!" if status else "Saqlanganlardan olib tashlandi!"
+    await callback.answer(msg, show_alert=True)
 
 
-@router.message(Command("cancel"), Search.waiting_for_query)
-async def cancel_search(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer("Bekor qilindi.")
+@router.callback_query(F.data.startswith("rate:"))
+async def rate_book(callback: CallbackQuery):
+    _, book_id, rating = callback.data.split(":")
+    await db.set_rating(callback.from_user.id, int(book_id), int(rating))
+    await callback.answer("Bahoingiz saqlandi!", show_alert=True)
 
 
-@router.message(Search.waiting_for_query)
-async def do_search(message: Message, state: FSMContext):
-    await state.clear()
-    query = message.text.strip()
-    results = await db.search_books(query)
-
-    if not results:
-        await message.answer(f"\"{query}\" bo'yicha hech narsa topilmadi.")
+@router.callback_query(F.data == "show_favorites")
+async def show_favorites(callback: CallbackQuery):
+    favs = await db.get_user_favorites(callback.from_user.id)
+    if not favs:
+        await callback.answer("Sizda hali saqlangan kitoblar yo'q.", show_alert=True)
         return
 
     builder = InlineKeyboardBuilder()
-    for book_id, title, _, _ in results:
-        builder.button(text=title, callback_data=f"book:{book_id}")
+    for b_id, title in favs:
+        builder.button(text=title, callback_data=f"book:{b_id}")
     builder.adjust(1)
-
-    await message.answer(
-        f"\"{query}\" bo'yicha {len(results)} ta natija topildi:",
-        reply_markup=builder.as_markup(),
-    )
+    await callback.message.answer("⭐️ Sizning saqlangan kitoblaringiz:", reply_markup=builder.as_markup())
+    await callback.answer()
