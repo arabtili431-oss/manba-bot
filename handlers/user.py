@@ -20,42 +20,59 @@ class Search(StatesGroup):
 
 # ---------- FORCE-SUBSCRIBE ----------
 
+async def get_unsubscribed_channels(bot: Bot, user_id: int) -> list:
+    """Foydalanuvchi obuna bo'lmagan kanallar ro'yxatini qaytaradi."""
+    channels_data = await db.get_setting("force_sub_channel")
+    if not channels_data:
+        return []
+
+    # Kanallarni ajratish (vergul bilan ko'rsatilgan bo'lsa ro'yxatga o'tkaziladi)
+    if isinstance(channels_data, str):
+        channels = [ch.strip() for ch in channels_data.split(",") if ch.strip()]
+    elif isinstance(channels_data, list):
+        channels = channels_data
+    else:
+        channels = [str(channels_data)]
+
+    unsubscribed = []
+    for channel in channels:
+        try:
+            member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
+            if member.status in ("left", "kicked"):
+                unsubscribed.append(channel)
+        except (TelegramBadRequest, TelegramForbiddenError) as e:
+            logging.error(f"Kanalni tekshirishda xatolik ({channel}): {e}")
+        except Exception as e:
+            logging.error(f"Kutilmagan xatolik ({channel}): {e}")
+
+    return unsubscribed
+
+
 async def check_subscription(bot: Bot, user_id: int) -> bool:
-    channel = await db.get_setting("force_sub_channel")
-    if not channel:
-        return True
-    try:
-        member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
-        return member.status not in ("left", "kicked")
-    except (TelegramBadRequest, TelegramForbiddenError) as e:
-        logging.error(f"Majburiy obuna tekshirishda xatolik (Kanal: {channel}): {e}")
-        # TelegramBadRequest bo'lganda True emas, False qaytariladi
-        return False
-    except Exception as e:
-        logging.error(f"Kutilmagan xatolik yuz berdi: {e}")
-        return False
+    unsubscribed = await get_unsubscribed_channels(bot, user_id)
+    return len(unsubscribed) == 0
 
 
 async def send_subscribe_prompt(message: Message):
-    channel = await db.get_setting("force_sub_channel")
+    unsubscribed = await get_unsubscribed_channels(message.bot, message.from_user.id)
     builder = InlineKeyboardBuilder()
-    
-    # Kanal havolasini to'g'ri shakllantirish
-    if not channel:
-        url = "https://t.me"
-    elif channel.startswith("http://") or channel.startswith("https://"):
-        url = channel
-    elif channel.startswith("@"):
-        url = f"https://t.me/{channel.lstrip('@')}"
-    else:
-        url = f"https://t.me/{channel}"
 
-    builder.button(text="📢 Kanalga o'tish", url=url)
+    for idx, channel in enumerate(unsubscribed, 1):
+        if channel.startswith("http://") or channel.startswith("https://"):
+            url = channel
+        elif channel.startswith("@"):
+            url = f"https://t.me/{channel.lstrip('@')}"
+        else:
+            url = f"https://t.me/{channel}"
+
+        btn_text = f"📢 {idx}-Kanalga o'tish" if len(unsubscribed) > 1 else "📢 Kanalga o'tish"
+        builder.button(text=btn_text, url=url)
+
     builder.button(text="✅ Tekshirish", callback_data="check_sub")
     builder.adjust(1)
-    
+
     await message.answer(
-        "Botdan foydalanish uchun avval kanalimizga a'zo bo'ling, "
+        "Botdan foydalanish uchun quyidagi kanallarga a'zo bo'ling, "
         "so'ng \"Tekshirish\" tugmasini bosing:",
         reply_markup=builder.as_markup(),
     )
@@ -67,7 +84,7 @@ async def check_sub_callback(callback: CallbackQuery):
         await callback.message.delete()
         await show_categories(callback.message, edit=False)
     else:
-        await callback.answer("Hali kanalga a'zo bo'lmadingiz yoki bot kanalda admin emas.", show_alert=True)
+        await callback.answer("Hali barcha kanallarga a'zo bo'lmadingiz.", show_alert=True)
 
 
 # ---------- MAIN MENU / CATEGORIES ----------
