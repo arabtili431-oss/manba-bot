@@ -16,12 +16,15 @@ class Search(StatesGroup):
     waiting_for_query = State()
 
 
-# ---------- MIDDLEWARE (BAN TEKSHIRISH) ----------
+# ---------- MIDDLEWARE (BAN VA MAJBURIY OBUNANI TEKSHIRISH) ----------
 
 @router.message.outer_middleware()
 @router.callback_query.outer_middleware()
-async def check_ban_middleware(handler, event, data):
+async def check_ban_and_sub_middleware(handler, event, data):
     user_id = event.from_user.id
+    bot: Bot = data.get("bot")
+
+    # 1. Ban qilinganligini tekshirish
     try:
         if await db.is_banned(user_id):
             if isinstance(event, Message):
@@ -30,8 +33,59 @@ async def check_ban_middleware(handler, event, data):
                 await event.answer("🚫 Siz bloklangansiz.", show_alert=True)
             return
     except Exception as e:
-        logging.error(f"Middleware error: {e}")
+        logging.error(f"Ban tekshirishda xatolik: {e}")
+
+    # "check_sub" tugmasi bosilsa, pastki tekshiruvga tushmasligi kerak
+    if isinstance(event, CallbackQuery) and event.data == "check_sub":
+        return await handler(event, data)
+
+    # 2. Majburiy obunani tekshirish
+    try:
+        channel = await db.get_setting("force_sub_channel")
+        if channel:
+            member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
+            if member.status not in ['member', 'creator', 'administrator', 'restricted']:
+                
+                builder = InlineKeyboardBuilder()
+                # URL shaklini to'g'rilash (masalan, @kanal_username -> t.me/kanal_username)
+                url = f"https://t.me/{channel.replace('@', '')}" if "@" in channel else channel
+                
+                builder.button(text="📢 Kanalga obuna bo'lish", url=url)
+                builder.button(text="✅ Tasdiqlash", callback_data="check_sub")
+                builder.adjust(1)
+                
+                msg_text = "❌ Botdan foydalanish uchun avval quyidagi kanalga obuna bo'lishingiz kerak:"
+                
+                if isinstance(event, Message):
+                    await event.answer(msg_text, reply_markup=builder.as_markup())
+                elif isinstance(event, CallbackQuery):
+                    await event.message.answer(msg_text, reply_markup=builder.as_markup())
+                    await event.answer()
+                return
+    except Exception as e:
+        logging.error(f"Majburiy obunani tekshirishda xatolik (Bot admin bo'lmasligi mumkin): {e}")
+
     return await handler(event, data)
+
+
+# ---------- OBUNANI TASDIQLASH TUGMASI ----------
+
+@router.callback_query(F.data == "check_sub")
+async def check_sub_handler(callback: CallbackQuery, bot: Bot):
+    channel = await db.get_setting("force_sub_channel")
+    if not channel:
+        await callback.message.delete()
+        return
+        
+    try:
+        member = await bot.get_chat_member(chat_id=channel, user_id=callback.from_user.id)
+        if member.status in ['member', 'creator', 'administrator', 'restricted']:
+            await callback.message.delete()
+            await callback.message.answer("✅ Rahmat! Obuna tasdiqlandi.\n\nIltimos, qaytadan /start buyrug'ini yuboring.")
+        else:
+            await callback.answer("❌ Siz hali kanalga obuna bo'lmadingiz!", show_alert=True)
+    except Exception as e:
+        await callback.answer("⚠️ Xatolik yuz berdi. Bot kanalga admin ekanligini tekshiring.", show_alert=True)
 
 
 # ---------- BO'LIMLAR TUGMALARI ----------
@@ -186,7 +240,7 @@ async def download_book(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("fav:"))
 async def favorite_toggle(callback: CallbackQuery):
     book_id = int(callback.data.split(":")[1])
-    status = await db.toggle_favorite(callback.from_user.id, book_id)
+    status = await db.toggle_favorite(callback.fromuser.id, book_id)
     msg = "Saqlanganlarga qo'shildi!" if status else "Saqlanganlardan olib tashlandi!"
     await callback.answer(msg, show_alert=True)
 
