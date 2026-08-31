@@ -1,6 +1,5 @@
 import asyncio
 import json
-import logging
 
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, FSInputFile
@@ -8,7 +7,11 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
+from aiogram.exceptions import (
+    TelegramForbiddenError,
+    TelegramRetryAfter,
+    TelegramNotFound,
+)
 
 import database as db
 from config import ADMIN_IDS
@@ -276,7 +279,7 @@ async def del_category_pick(callback: CallbackQuery):
         builder.button(text=f"🗑 {name}", callback_data=f"confirm_del_cat:{cat_id}")
     builder.adjust(1)
     await callback.message.answer(
-        "Diqqat: bo'lim o'chirilsa, undagi barcha kitoblar ham o'chadi.\nQaysi bo me'yordagi bo'limni o'chiramiz?",
+        "Diqqat: bo'lim o'chirilsa, undagi barcha kitoblar ham o'chadi.\nQaysi bo'limni o'chiramiz?",
         reply_markup=builder.as_markup(),
     )
     await callback.answer()
@@ -345,6 +348,9 @@ async def send_broadcast_confirm(callback: CallbackQuery, state: FSMContext):
 
     sent = 0
     failed = 0
+    blocked_count = 0
+    not_found_count = 0
+    other_count = 0
 
     for user_id in users:
         try:
@@ -365,16 +371,30 @@ async def send_broadcast_confirm(callback: CallbackQuery, state: FSMContext):
                 sent += 1
             except Exception:
                 failed += 1
+                other_count += 1
         except TelegramForbiddenError:
             failed += 1
+            blocked_count += 1
+        except TelegramNotFound:
+            failed += 1
+            not_found_count += 1
         except Exception:
             failed += 1
+            other_count += 1
 
         await asyncio.sleep(0.05)
 
-    await callback.message.answer(
-        f"✅ Yuborish yakunlandi.\nYuborildi: {sent}\nYuborilmadi: {failed}"
+    report_text = (
+        f"✅ Yuborish yakunlandi.\n\n"
+        f"📤 Yuborildi: {sent}\n"
+        f"❌ Yuborilmadi: {failed}\n\n"
+        f"📌 **Xatoliklar sababi:**\n"
+        f"🚫 Botni bloklagan / O'chirilgan akkauntlar: {blocked_count}\n"
+        f"🔍 Chat topilmadi: {not_found_count}\n"
+        f"⚠️ Boshqa xatoliklar: {other_count}"
     )
+
+    await callback.message.answer(report_text)
     await callback.answer()
 
 
@@ -429,7 +449,7 @@ async def set_channel_start(event: Message | CallbackQuery, state: FSMContext):
 
     await state.set_state(SetChannel.waiting_for_channel)
     msg_text = (
-        "Majburiy obuna kanali username'ini yoki silakasini yuboring (masalan: @mening_kanalim).\n\n"
+        "Majburiy obuna kanali username'ini yuboring (masalan: @mening_kanalim).\n\n"
         "Bir nechta kanal qo'shishingiz mumkin, ular ketma-ket saqlab boriladi.\n\n"
         "Diqqat: bot shu kanallarda admin bo'lishi shart!\n\n"
         "Mavjud kanallarni ko'rish yoki o'chirish uchun /removechannel buyrug'idan foydalaning."
