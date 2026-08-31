@@ -60,6 +60,11 @@ async def init_db():
             )
         """)
 
+        # MAVJUD BAZANI AVTOMATIK YANGILASH (MIGRATION)
+        await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_banned BOOLEAN DEFAULT FALSE")
+        await conn.execute("ALTER TABLE books ADD COLUMN IF NOT EXISTS photo_id TEXT DEFAULT NULL")
+        await conn.execute("ALTER TABLE books ADD COLUMN IF NOT EXISTS description TEXT DEFAULT NULL")
+
 
 # ---------- CATEGORIES ----------
 
@@ -74,19 +79,6 @@ async def get_categories():
     async with pool.acquire() as conn:
         rows = await conn.fetch("SELECT id, name FROM categories ORDER BY name")
         return [(row["id"], row["name"]) for row in rows]
-
-
-async def get_category(category_id: int):
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT id, name FROM categories WHERE id = $1", category_id)
-        return (row["id"], row["name"]) if row else None
-
-
-async def update_category_name(category_id: int, name: str):
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute("UPDATE categories SET name = $1 WHERE id = $2", name, category_id)
 
 
 async def delete_category(category_id: int):
@@ -125,12 +117,6 @@ async def get_book(book_id: int):
             book_id,
         )
         return dict(row) if row else None
-
-
-async def update_book_title(book_id: int, title: str):
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute("UPDATE books SET title = $1 WHERE id = $2", title, book_id)
 
 
 async def delete_book(book_id: int):
@@ -285,9 +271,3 @@ async def get_setting(key: str):
     pool = await get_pool()
     async with pool.acquire() as conn:
         return await conn.fetchval("SELECT value FROM settings WHERE key = $1", key)
-
-
-async def delete_setting(key: str):
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM settings WHERE key = $1", key)
