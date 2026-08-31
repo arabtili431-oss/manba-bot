@@ -240,7 +240,7 @@ async def download_book(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("fav:"))
 async def favorite_toggle(callback: CallbackQuery):
     book_id = int(callback.data.split(":")[1])
-    status = await db.toggle_favorite(callback.fromuser.id, book_id)
+    status = await db.toggle_favorite(callback.from_user.id, book_id)
     msg = "Saqlanganlarga qo'shildi!" if status else "Saqlanganlardan olib tashlandi!"
     await callback.answer(msg, show_alert=True)
 
